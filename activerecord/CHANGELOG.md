@@ -1,3 +1,44 @@
+*   Add translate option for `enum`
+
+    The `translate` option for `enum` generates a `human_` method for the
+
+    defined enum to the current locale. Defaults to the getter method of the enum.
+
+    ```yaml
+    # config/locales/en.yml
+    en:
+      activerecord:
+        attributes:
+          user:
+            statuses:
+              active: "Active"
+
+    # config/locales/de.yml
+    de:
+      activerecord:
+        attributes:
+          user:
+            statuses:
+              active: "Aktiv"
+    ```
+
+    ```ruby
+    class User < ApplicationRecord
+        enum :status, { active: 0, archived: 1 }, translate: true
+    end
+
+    I18n.locale = :en
+    User.new(status: :active).human_status # => "Active"
+
+    I18n.locale = :de
+    User.new(status: :active).human_status # => "Aktiv"
+
+    I18n.locale = :fr
+    User.new(status: :active).human_status # => "active"
+    ```
+
+    *Benjamin Deutscher*
+
 *   Raise specific exception when a connection is not defined.
 
      The new `ConnectionNotDefined` exception provides connection name, shard and role accessors indicating the details of the connection that was requested.

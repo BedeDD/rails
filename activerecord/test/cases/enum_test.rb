@@ -351,6 +351,37 @@ class EnumTest < ActiveRecord::TestCase
     assert_not_predicate invalid_book, :valid?
   end
 
+  test 'tranlation with translate: true' do
+    klass = Class.new(ActiveRecord::Base) do
+      def self.name; "Book"; end
+      enum :status, [:proposed, :written], translate: true
+    end
+
+    valid_book = klass.new(status: "proposed")
+    assert_respond_to valid_book, :human_status
+    assert valid_book.human_status == "proposed"
+  end
+
+  test 'translation with translate: false' do
+    klass = Class.new(ActiveRecord::Base) do
+      def self.name; "Book"; end
+      enum :status, [:proposed, :written], translate: false
+    end
+
+    valid_book = klass.new(status: "proposed")
+    assert_not_respond_to valid_book, :human_status
+  end
+
+  test 'translation on default enum definition' do
+    klass = Class.new(ActiveRecord::Base) do
+      def self.name; "Book"; end
+      enum :status, [:proposed, :written]
+    end
+
+    valid_book = klass.new(status: "proposed")
+    assert_not_respond_to valid_book, :human_status
+  end
+
   test "NULL values from database should be casted to nil" do
     Book.where(id: @book.id).update_all("status = NULL")
     assert_nil @book.reload.status

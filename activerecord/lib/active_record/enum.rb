@@ -162,6 +162,34 @@ module ActiveRecord
   #   conversation = Conversation.new
   #
   #   conversation.status = :unknown # 'unknown' is not a valid status (ArgumentError)
+  #
+  # If you want to have methods for translating enum values to different languages you
+  # can use the +:translate+ option.
+  # The translation will use the key
+  # +activerecord.attributes.#{model_name.i18n_key}.#{enum_name}.#{enum_value}+.
+  # If no translation is found it will use the enum value as default:
+  #
+  #   config/locales/en.yml
+  #   en:
+  #     activerecord:
+  #       attributes:
+  #         conversation:
+  #           statuses:
+  #             active: "Active"
+  #             archived: "Archived"
+  #
+  #   class Conversation < ActiveRecord::Base
+  #     enum :status, [ :active, :archived ], translate: true
+  #   end
+  #
+  #   conversation = Conversation.new(status: :active)
+  #
+  #   conversation.status # => "active"
+  #   conversation.human_status # => "Active"
+  #
+  #   I18n.locale = :de
+  #   conversation.status # => "active"
+  #   conversation.human_status # => "active"
   module Enum
     def self.extended(base) # :nodoc:
       base.class_attribute(:defined_enums, instance_writer: false, default: {})
@@ -238,7 +266,7 @@ module ActiveRecord
         super
       end
 
-      def _enum(name, values, prefix: nil, suffix: nil, scopes: true, instance_methods: true, validate: false, **options)
+      def _enum(name, values, prefix: nil, suffix: nil, scopes: true, instance_methods: true, validate: false, translate: false, **options)
         assert_valid_enum_definition_values(values)
         # statuses = { }
         enum_values = ActiveSupport::HashWithIndifferentAccess.new
@@ -298,6 +326,12 @@ module ActiveRecord
         if validate
           validate = {} unless Hash === validate
           validates_inclusion_of name, in: enum_values.keys, **validate
+        end
+
+        if translate
+          define_method("human_#{name}") do
+            I18n.t("activerecord.attributes.#{self.class.model_name.i18n_key}.#{name.pluralize}.#{public_send(name)}", default: public_send(name))
+          end
         end
 
         enum_values.freeze
