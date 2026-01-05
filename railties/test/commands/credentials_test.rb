@@ -367,6 +367,292 @@ class Rails::Command::CredentialsTest < ActiveSupport::TestCase
     assert_match("Invalid or missing credential path: egg.spam", stderr_output)
   end
 
+  test "set simple credential" do
+    output = run_set_command("FOO=bar")
+
+    assert_match(/Setting credentials/, output)
+    assert_match(/\+ foo: "bar"/, output)
+    assert_match(/Credentials encrypted and saved/, output)
+    assert_match(/foo: bar/, run_show_command)
+  end
+
+  test "set nested credential with double underscore" do
+    output = run_set_command("DATABASE__HOST=localhost")
+
+    assert_match(/\+ database\.host: "localhost"/, output)
+
+    yaml = YAML.load(run_show_command)
+    assert_equal "localhost", yaml["database"]["host"]
+  end
+
+  test "set multiple credentials at once" do
+    output = run_set_command("FOO=1", "BAR=2", "BAZ=3")
+
+    assert_match(/\+ foo: 1/, output)
+    assert_match(/\+ bar: 2/, output)
+    assert_match(/\+ baz: 3/, output)
+
+    yaml = YAML.load(run_show_command)
+    assert_equal 1, yaml["foo"]
+    assert_equal 2, yaml["bar"]
+    assert_equal 3, yaml["baz"]
+  end
+
+  test "set credential with type inference" do
+    run_set_command("PORT=3000", "DEBUG=true", "RATE=1.5", "NAME=myapp", "EMPTY=nil")
+
+    yaml = YAML.load(run_show_command)
+    assert_equal 3000, yaml["port"]
+    assert_equal true, yaml["debug"]
+    assert_equal 1.5, yaml["rate"]
+    assert_equal "myapp", yaml["name"]
+    assert_nil yaml["empty"]
+  end
+
+  test "set overwrites existing credential" do
+    run_set_command("FOO=old")
+    output = run_set_command("FOO=new")
+
+    assert_match(/~ foo: "old" → "new"/, output)
+    assert_match(/foo: new/, run_show_command)
+  end
+
+  test "set deeply nested credential" do
+    run_set_command("AWS__S3__BUCKET__NAME=mybucket")
+
+    yaml = YAML.load(run_show_command)
+    assert_equal "mybucket", yaml["aws"]["s3"]["bucket"]["name"]
+  end
+
+  test "set credential with environment flag" do
+    output = run_set_command("API_KEY=secret123", environment: "production")
+
+    assert_match(/config\/credentials\/production\.yml\.enc/, output)
+    assert_match(/\+ api_key: "secret123"/, output)
+
+    yaml = YAML.load(run_show_command(environment: "production"))
+    assert_equal "secret123", yaml["api_key"]
+  end
+
+  test "set with empty value" do
+    run_set_command("FOO=")
+
+    yaml = YAML.load(run_show_command)
+    assert_equal "", yaml["foo"]
+  end
+
+  test "set preserves other credentials" do
+    write_credentials({ "existing" => "value" }.to_yaml)
+    run_set_command("NEW=added")
+
+    yaml = YAML.load(run_show_command)
+    assert_equal "value", yaml["existing"]
+    assert_equal "added", yaml["new"]
+  end
+
+  test "set handles empty credentials file" do
+    write_credentials("")
+    run_set_command("FOO=bar")
+
+    assert_match(/foo: bar/, run_show_command)
+  end
+
+  test "set handles keys with single underscores" do
+    run_set_command("FOO_BAR=value")
+
+    yaml = YAML.load(run_show_command)
+    assert_equal "value", yaml["foo_bar"]
+  end
+
+  test "set fails with invalid format" do
+    stderr_output = capture(:stderr) { run_set_command("NOTEQUALS", stderr: true, allow_failure: true) }
+    assert_match(/Invalid format.*Expected KEY=VALUE/, stderr_output)
+  end
+
+  test "set fails with no arguments" do
+    stderr_output = capture(:stderr) { run_set_command(stderr: true, allow_failure: true) }
+    assert_match(/No key-value pairs provided/, stderr_output)
+  end
+
+  test "set with force flag skips confirmation" do
+    write_credentials({ "foo" => "old" }.to_yaml)
+    output = run_set_command("FOO=new", force: true)
+
+    assert_match(/~ foo: "old" → "new"/, output)
+    assert_no_match(/Overwrite existing credentials/, output)
+    assert_match(/Credentials encrypted and saved/, output)
+  end
+
+  test "set with command-line args fails without insecure flag" do
+    stderr = capture(:stderr) do
+      run_set_command("API_KEY=secret", insecure: false, force: true, stderr: true, allow_failure: true)
+    end
+
+    assert_match(/Command-line arguments containing secrets are insecure/, stderr)
+    assert_match(/Shell history/, stderr)
+    assert_match(/echo "value" \| bin\/rails credentials:set KEY/, stderr)
+    assert_match(/--insecure/, stderr)
+  end
+
+  test "set with insecure flag shows warning" do
+    output = run_set_command("--insecure", "API_KEY=secret", force: true)
+
+    assert_match(/WARNING: Using --insecure/, output)
+    assert_match(/shell history/, output)
+    assert_match(/\+ api_key: "secret"/, output)
+
+    yaml = YAML.load(run_show_command)
+    assert_equal "secret", yaml["api_key"]
+  end
+
+  test "set shows actual values in preview" do
+    output = run_set_command("--insecure", "API_KEY=very-secret-value", force: true)
+
+    # Should show actual value (matches Rails' behavior of showing encryption keys)
+    assert_match(/very-secret-value/, output)
+    assert_match(/api_key: "very-secret-value"/, output)
+
+    yaml = YAML.load(run_show_command)
+    assert_equal "very-secret-value", yaml["api_key"]
+  end
+
+  test "set without force flag when adding new keys does not prompt" do
+    output = run_set_command("NEW_KEY=value", force: false)
+
+    assert_match(/\+ new_key: "value"/, output)
+    assert_no_match(/Overwrite existing credentials/, output)
+    assert_match(/Credentials encrypted and saved/, output)
+  end
+
+  test "set deduplicates when same key appears multiple times" do
+    output = run_set_command("FOO=first", "FOO=second", "FOO=third")
+
+    # Should only show the final value
+    assert_match(/\+ foo: "third"/, output)
+    # First and second values are discarded due to deduplication, so only "third" shows
+    assert_no_match(/"first"/, output)
+    assert_no_match(/"second"/, output)
+
+    yaml = YAML.load(run_show_command)
+    assert_equal "third", yaml["foo"]
+  end
+
+  test "unset simple credential" do
+    write_credentials({ "foo" => "bar" }.to_yaml)
+    output = run_unset_command("FOO")
+
+    assert_match(/Removing credentials/, output)
+    assert_match(/- foo: "bar"/, output)
+    assert_match(/Credentials encrypted and saved/, output)
+
+    yaml = YAML.load(run_show_command)
+    assert_nil yaml["foo"]
+  end
+
+  test "unset nested credential" do
+    write_credentials({ "database" => { "host" => "localhost", "port" => 5432 } }.to_yaml)
+    run_unset_command("DATABASE__HOST")
+
+    yaml = YAML.load(run_show_command)
+    assert_nil yaml.dig("database", "host")
+    assert_equal 5432, yaml.dig("database", "port")
+  end
+
+  test "unset cleans up empty parent hashes" do
+    write_credentials({ "database" => { "host" => "localhost" } }.to_yaml)
+    run_unset_command("DATABASE__HOST")
+
+    yaml = YAML.load(run_show_command)
+    assert_nil yaml["database"]
+  end
+
+  test "unset multiple credentials at once" do
+    write_credentials({ "foo" => "1", "bar" => "2", "baz" => "3" }.to_yaml)
+    output = run_unset_command("FOO", "BAR")
+
+    assert_match(/- foo: "1"/, output)
+    assert_match(/- bar: "2"/, output)
+
+    yaml = YAML.load(run_show_command)
+    assert_nil yaml["foo"]
+    assert_nil yaml["bar"]
+    assert_equal "3", yaml["baz"]
+  end
+
+  test "unset non-existent credential shows warning" do
+    write_credentials({ "foo" => "bar" }.to_yaml)
+    output = run_unset_command("NOTFOUND")
+
+    assert_match(/- notfound: \(not found\)/, output)
+    # Should still save successfully
+    assert_match(/Credentials encrypted and saved/, output)
+  end
+
+  test "unset with environment flag" do
+    write_credentials({ "api_key" => "secret" }.to_yaml, environment: "production")
+    output = run_unset_command("API_KEY", environment: "production")
+
+    assert_match(/config\/credentials\/production\.yml\.enc/, output)
+    assert_match(/- api_key: "secret"/, output)
+
+    yaml = YAML.load(run_show_command(environment: "production"))
+    assert_nil yaml["api_key"]
+  end
+
+  test "unset deeply nested credential" do
+    write_credentials({ "aws" => { "s3" => { "bucket" => { "name" => "mybucket", "region" => "us-east-1" } } } }.to_yaml)
+    run_unset_command("AWS__S3__BUCKET__NAME")
+
+    yaml = YAML.load(run_show_command)
+    assert_nil yaml.dig("aws", "s3", "bucket", "name")
+    assert_equal "us-east-1", yaml.dig("aws", "s3", "bucket", "region")
+  end
+
+  test "unset cleans up multiple empty parents" do
+    write_credentials({ "aws" => { "s3" => { "bucket" => { "name" => "mybucket" } } } }.to_yaml)
+    run_unset_command("AWS__S3__BUCKET__NAME")
+
+    yaml = YAML.load(run_show_command)
+    assert_nil yaml["aws"]
+  end
+
+  test "unset preserves other credentials" do
+    write_credentials({ "keep" => "me", "remove" => "me" }.to_yaml)
+    run_unset_command("REMOVE")
+
+    yaml = YAML.load(run_show_command)
+    assert_equal "me", yaml["keep"]
+    assert_nil yaml["remove"]
+  end
+
+  test "unset fails with no arguments" do
+    stderr_output = capture(:stderr) { run_unset_command(stderr: true, allow_failure: true) }
+    assert_match(/No keys provided/, stderr_output)
+  end
+
+  test "set and unset work together" do
+    # Set some values
+    run_set_command("DATABASE__HOST=localhost", "DATABASE__PORT=5432")
+
+    yaml = YAML.load(run_show_command)
+    assert_equal "localhost", yaml.dig("database", "host")
+    assert_equal 5432, yaml.dig("database", "port")
+
+    # Unset one value
+    run_unset_command("DATABASE__PORT")
+
+    yaml = YAML.load(run_show_command)
+    assert_equal "localhost", yaml.dig("database", "host")
+    assert_nil yaml.dig("database", "port")
+
+    # Set another value
+    run_set_command("DATABASE__USER=postgres")
+
+    yaml = YAML.load(run_show_command)
+    assert_equal "localhost", yaml.dig("database", "host")
+    assert_equal "postgres", yaml.dig("database", "user")
+  end
+
   private
     DEFAULT_CREDENTIALS_PATTERN = /access_key_id: 123\n.*secret_key_base: \h{128}\n/m
 
@@ -391,6 +677,22 @@ class Rails::Command::CredentialsTest < ActiveSupport::TestCase
 
     def run_fetch_command(path, **options)
       rails "credentials:fetch", path, **options
+    end
+
+    def run_set_command(*args, environment: nil, force: true, insecure: false, **options)
+      # By default, use --force to skip confirmation and --insecure for old KEY=VALUE syntax in tests
+      args_with_options = []
+      args_with_options += ["--environment", environment] if environment
+      args_with_options << "--force" if force
+      args_with_options << "--insecure" if insecure || args.any? { |arg| arg.is_a?(String) && arg.include?("=") }
+      args_with_options += args
+
+      rails "credentials:set", args_with_options, **options
+    end
+
+    def run_unset_command(*keys, environment: nil, **options)
+      args = environment ? ["--environment", environment] + keys : keys
+      rails "credentials:unset", args, **options
     end
 
     def write_credentials(content, **options)
